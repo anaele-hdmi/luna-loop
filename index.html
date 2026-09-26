@@ -106,19 +106,25 @@
   #meter.coarse .band, #meter.coarse .needle { display: none; }
   #meter:not(.coarse) .fill { display: none; }
 
-  .row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
-  .lcol { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-  #fuelChip { display: grid; grid-template-columns: auto auto auto; align-items: baseline; gap: 0 5px; padding: 5px 9px 7px; border-radius: 11px; font-size: 10px; color: var(--ink2); }
-  #fuelChip b { font-family: var(--mono); font-weight: 500; font-size: 13px; color: var(--ink); font-variant-numeric: tabular-nums; }
-  #fuelChip i { grid-column: 1 / -1; height: 3px; margin-top: 4px; border-radius: 99px; background: rgba(246,241,232,.12); overflow: hidden; }
+  /* Left column (meter + controls) fills whatever the right column (burn / pad / corrections) leaves. */
+  .dock { display: flex; align-items: flex-end; gap: 8px; }
+  .dleft { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ctrl { display: flex; align-items: stretch; gap: 5px; }
+  .ctrl > * { height: 40px; }
+  #fuelChip { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 0 9px; border-radius: 12px; font-size: 10px; color: var(--ink2); }
+  #fuelChip { container-type: inline-size; overflow: hidden; }
+  @container (max-width: 56px) { #fuelChip .fr span { display: none; } #fuelChip .fr { justify-content: flex-end; } }
+  #fuelChip .fr { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 9.5px; }
+  #fuelChip b { font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #fuelChip i { display: block; height: 3px; border-radius: 99px; background: rgba(246,241,232,.12); overflow: hidden; }
   #fuelChip i span { display: block; height: 100%; background: linear-gradient(90deg, var(--coral), var(--sun)); transform-origin: left; }
   #fuelChip.low b { color: var(--rose); }
-  #skipBtn { height: 38px; padding: 0 14px; border-radius: 12px; background: var(--ink); color: var(--void); font-family: var(--pop); font-size: 13px; white-space: nowrap; }
+  #skipBtn { flex: none; padding: 0 10px; border-radius: 12px; background: var(--ink); color: var(--void); font-family: var(--pop); font-size: 13px; white-space: nowrap; }
   #skipBtn:disabled { opacity: .35; }
-  .warp { display: flex; align-items: center; border-radius: 12px; }
-  .warp button { width: 34px; height: 32px; border-radius: 10px; font-size: 17px; font-family: var(--pop); }
+  .warp { flex: none; display: flex; align-items: center; border-radius: 12px; }
+  .warp button { width: 30px; height: 100%; border-radius: 10px; font-size: 17px; font-family: var(--pop); }
   .warp button:active { background: rgba(246,241,232,.12); }
-  #wVal { min-width: 58px; text-align: center; font-family: var(--mono); font-size: 11.5px; }
+  #wVal { min-width: 46px; text-align: center; font-family: var(--mono); font-size: 11.5px; }
   #wVal.cap { color: var(--sun); }
 
   #burnBtn {
@@ -140,9 +146,10 @@
   #corr button.on { background: var(--sky); color: #04192a; }
   #corr .t { grid-column: 1 / -1; font-size: 9px; text-align: center; color: var(--ink3); letter-spacing: .08em; }
 
-  #pad { flex: 1; min-width: 0; max-width: 260px; padding: 6px; border-radius: 14px; display: flex; flex-direction: column; gap: 5px; }
+  #pad { padding: 6px; border-radius: 14px; display: flex; gap: 8px; align-items: stretch; }
+  #pad .pside { flex: 0 0 118px; display: flex; flex-direction: column; justify-content: space-between; gap: 6px; }
   #padArea {
-    position: relative; height: 96px; border-radius: 10px; touch-action: none; cursor: grab;
+    position: relative; flex: 1; min-width: 0; height: 104px; border-radius: 10px; touch-action: none; cursor: grab;
     background:
       linear-gradient(rgba(246,241,232,.07) 1px, transparent 1px) 0 0/100% 12px,
       linear-gradient(90deg, rgba(246,241,232,.07) 1px, transparent 1px) 0 0/12px 100%,
@@ -166,9 +173,10 @@
   #padArea .ax.dn { bottom: 3px; left: 50%; transform: translateX(-50%); }
   #padArea .ax.lf { left: 5px; top: 50%; transform: translateY(-50%); }
   #padArea .ax.rt { right: 5px; top: 50%; transform: translateY(-50%); }
-  #padVals { display: flex; justify-content: space-between; gap: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--ink2); }
+  #padVals { display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 10.5px; color: var(--ink2); }
+  #padVals span { display: flex; justify-content: space-between; }
   #padVals b { color: var(--ink); font-weight: 500; }
-  #execBtn { height: 34px; border-radius: 10px; background: var(--sun); color: #231704; font-family: var(--pop); font-size: 13px; }
+  #execBtn { height: 44px; line-height: 1.2; border-radius: 10px; background: var(--sun); color: #231704; font-family: var(--pop); font-size: 13px; }
   #execBtn:disabled { filter: grayscale(1) brightness(.55); }
 
   #toast {
@@ -231,31 +239,35 @@
   <nav id="views" class="card" aria-label="視点">
     <span class="vl">視点</span><button data-f="all">全体</button><button data-f="earth" aria-pressed="true">地球</button><button data-f="ship">船</button><button data-f="moon">月</button>
   </nav>
-  <section id="meter" class="card">
-    <div class="mhead"><span id="mLabel">予測 近月点高度</span><b id="mValue">—</b></div>
-    <div class="track"><div class="fill" id="mFill"></div><div class="band" id="mBand"></div><div class="needle" id="mNeedle"></div></div>
+  <section id="pad" class="card" hidden>
+    <div id="padArea">
+      <svg class="rubber" aria-hidden="true"><line id="rubber" x1="50%" y1="50%" x2="50%" y2="50%"/></svg>
+      <span class="anchor"></span>
+      <span class="ax up">▲ 噴射量＋</span><span class="ax dn">▼ 噴射量−</span><span class="ax lf">◀ 早く</span><span class="ax rt">遅く ▶</span>
+      <div class="knob idle" id="knob"><i></i><i></i><i></i></div>
+    </div>
+    <div class="pside">
+      <div id="padVals"><span>噴射量 <b id="pDv">—</b></span><span>点火 <b id="pT">—</b></span></div>
+      <button id="execBtn">この計画で<br>噴射</button>
+    </div>
   </section>
-  <div class="row">
-    <div class="lcol">
-      <div id="fuelChip" class="card"><span>燃料 Δv</span><b id="fuelTxt">5,500</b><span>m/s</span><i><span id="fuelBar2"></span></i></div>
-      <button id="skipBtn">▶▶ 次へ</button>
-      <div class="warp card">
-        <button id="wDown" aria-label="時間を遅く">−</button>
-        <span id="wVal">×1</span>
-        <button id="wUp" aria-label="時間を速く">+</button>
+  <div class="dock">
+    <div class="dleft">
+      <section id="meter" class="card">
+        <div class="mhead"><span id="mLabel">予測 近月点高度</span><b id="mValue">—</b></div>
+        <div class="track"><div class="fill" id="mFill"></div><div class="band" id="mBand"></div><div class="needle" id="mNeedle"></div></div>
+      </section>
+      <div class="ctrl">
+        <button id="skipBtn">▶▶ 次へ</button>
+        <div class="warp card">
+          <button id="wDown" aria-label="時間を遅く">−</button>
+          <span id="wVal">×1</span>
+          <button id="wUp" aria-label="時間を速く">+</button>
+        </div>
+        <div id="fuelChip" class="card"><div class="fr"><span>燃料</span><b id="fuelTxt">5,500</b></div><i><span id="fuelBar2"></span></i></div>
       </div>
     </div>
     <button id="burnBtn">噴射<small>長押し</small></button>
-    <section id="pad" class="card" hidden>
-      <div id="padArea">
-        <svg class="rubber" aria-hidden="true"><line id="rubber" x1="50%" y1="50%" x2="50%" y2="50%"/></svg>
-        <span class="anchor"></span>
-        <span class="ax up">▲ 噴射量＋</span><span class="ax dn">▼ 噴射量−</span><span class="ax lf">◀ 早く</span><span class="ax rt">遅く ▶</span>
-        <div class="knob idle" id="knob"><i></i><i></i><i></i></div>
-      </div>
-      <div id="padVals"><span>Δv <b id="pDv">—</b></span><span>点火 <b id="pT">—</b></span></div>
-      <button id="execBtn">この計画で噴射</button>
-    </section>
     <section id="corr" class="card" hidden>
       <span class="t">修正噴射</span>
       <button data-d="pro">前</button><button data-d="retro">後</button>
@@ -1750,6 +1762,7 @@ function hint() {
     const out = pred.splash ? `着水予測・最大 ${pred.maxg.toFixed(1)} G` : pred.skip ? '大気で跳ね返される' : '';
     return `近地点を30〜60 kmの回廊に。修正噴射は遠くでやるほど効く。${out ? '（' + out + '）' : ''}`;
   }
+  if (S.descent) return 'パラシュートで降下中。時間は縮めてある。着水まで見守る';
   if (st === 'entry') return `耐えろ… ${S.g.toFixed(1)} G`;
   return '';
 }
@@ -1800,7 +1813,9 @@ function updateHUD(w) {
   ui.skip.disabled = !moreOrbit && (S.holding || !!S.burn || S.stage === 'entry' || nextEvent() === null);
   ui.skip.textContent = moreOrbit ? '↻ もう一周' : S.skip ? '▶▶ 進行中' : '▶▶ 次へ';
 
-  if (!ui.more.hidden) {
+  if (!ui.more.hidden && S.descent) {
+    ui.tele.innerHTML = `<div>時刻<b>${fmtMET(S.t).slice(3)}</b></div><div>最大G<b>${S.maxg.toFixed(1)}</b></div><div>高度<b>${Math.round(S.descent.alt).toLocaleString('ja-JP')} m</b></div><div>降下<b>${S.descent.v.toFixed(1)} m/s</b></div>`;
+  } else if (!ui.more.hidden) {
     const d = dominant(S.s, S.t);
     const el = elements(d.rx, d.ry, d.vx, d.vy, d.mu);
     const alt = d.r - d.R, v = Math.hypot(d.vx, d.vy);
