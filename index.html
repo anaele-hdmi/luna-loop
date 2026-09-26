@@ -98,7 +98,9 @@
   .track { position: relative; height: 6px; border-radius: 99px; background: rgba(246,241,232,.1); }
   .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px; background: linear-gradient(90deg, rgba(255,118,87,.5), var(--sun)); width: 0; }
   .band { position: absolute; top: 0; bottom: 0; border-radius: 99px; background: rgba(99,240,191,.35); box-shadow: inset 0 0 0 1.5px var(--mint); }
-  .needle { position: absolute; top: -4px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 10px var(--sun); transition: left .08s linear, background .2s; }
+  .needle { position: absolute; top: -4px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 10px var(--sun); transition: left .15s ease-out, background .2s; }
+  #meter { transition: box-shadow .3s; }
+  #meter.fine { box-shadow: 0 0 0 2px var(--sun), 0 0 18px rgba(255,211,122,.35); }
   .needle.ok { background: var(--mint); box-shadow: 0 0 14px var(--mint); }
   .needle.bad { background: var(--rose); box-shadow: 0 0 12px var(--rose); }
   #meter.coarse .band, #meter.coarse .needle { display: none; }
@@ -170,7 +172,7 @@
   #execBtn:disabled { filter: grayscale(1) brightness(.55); }
 
   #toast {
-    position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(.8); opacity: 0;
+    position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 118px); transform: translate(-50%, -50%) scale(.8); opacity: 0;
     padding: 10px 18px; border-radius: 99px; background: var(--ink); color: var(--void);
     font-family: var(--pop); font-size: 16px; white-space: nowrap; pointer-events: none;
     transition: opacity .25s, transform .35s cubic-bezier(.2,1.6,.4,1);
@@ -976,7 +978,7 @@ const chutes = new THREE.Group();
   const c = cv.getContext('2d');
   for (let i = 0; i < 16; i++) { c.fillStyle = i % 2 ? '#fff6ea' : '#ff6a3d'; c.fillRect(i * 16, 0, 16, 8); }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.85, metalness: 0, emissive: 0x2a1208 });
+  const mat = new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex, side: THREE.DoubleSide, roughness: 0.85, metalness: 0, emissive: 0x9a6a5a });
   const lineMat = new THREE.LineBasicMaterial({ color: 0xd8d2c6, transparent: true, opacity: 0.8 });
   const make = (radius, dist, tilt, ang, height) => {
     const g = new THREE.Group();
@@ -1012,10 +1014,10 @@ const skyDome = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.Sh
       c=mix(c,hor*1.04,exp(-abs(h)*70.0)*0.75);
       c+=vec3(1.0,0.93,0.82)*pow(max(dot(D,uSun),0.0),80.0)*2.0*step(0.0,h);
       if(h<0.0){ vec3 R=reflect(D,uUp); c+=vec3(1.0,0.9,0.75)*pow(max(dot(R,uSun),0.0),220.0)*2.5; }
-      gl_FragColor=vec4(c*1.2*uA,uA); }`,
-  side: THREE.BackSide, transparent: true, depthWrite: false, depthTest: false,
+      gl_FragColor=vec4(c*1.2*uA,1.0); }`,
+  side: THREE.BackSide, depthWrite: false, depthTest: false,
 }));
-skyDome.renderOrder = -1; skyDome.frustumCulled = false; skyDome.visible = false;
+skyDome.renderOrder = -10; skyDome.frustumCulled = false; skyDome.visible = false;
 scene.add(skyDome);
 const ripple = new THREE.Mesh(new THREE.RingGeometry(0.94, 1, 96), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
 scene.add(ripple);
@@ -1467,11 +1469,13 @@ function effWarp(burnB) {
   if (burnB) {
     if (burnB.kind === 'main' && !S.auto) {
       const base = burnB.stage === 'tli' ? 20 : 8;
-      const near = nearTarget();
+      // Latch: once precision starts it stays for the rest of this burn, so the gauge never flips back.
+      const near = burnB.fine || nearTarget();
+      if (near && !burnB.fine) { burnB.fine = true; sfx.alert(); }
       S.slow = near;
       eff = near ? Math.min(base, precisionRate(burnB) / burnB.a) : base;
     } else if (burnB.kind === 'main') eff = 10;
-    else { const near = nearTarget(); S.slow = near; eff = near ? Math.min(5, precisionRate(burnB) / burnB.a) : Math.min(eff, 5); }
+    else { const near = burnB.fine || nearTarget(); if (near) burnB.fine = true; S.slow = near; eff = near ? Math.min(5, precisionRate(burnB) / burnB.a) : Math.min(eff, 5); }
   }
   return { eff, capped: eff < w && !burnB, why };
 }
@@ -1480,12 +1484,15 @@ function nearTarget() {
   const mt = metric(pred); if (mt.pos === undefined || !mt.band) return false;
   const sc = mt.scale; const lo = scalePos(sc, mt.band.lo), hi = scalePos(sc, mt.band.hi);
   // TLI: the needle only moves in the last ~100 m/s, so slow down from a high apogee rather than from the needle.
-  if (S.stage === 'tli' && S.burn && S.burn.kind === 'main') { const el = elements(S.s[0], S.s[1], S.s[2], S.s[3], MUE); return el.ra > 280000 || el.en > 0; }
-  if (mt.val === '—' || mt.val === '捕まっていない' || mt.esc) {
-    if (S.stage === 'loi') { const d = dominant(S.s, S.t); const el = elements(d.rx, d.ry, d.vx, d.vy, MUM); return el.en < 0.12; }
-    if (S.stage === 'tei') { const d = dominant(S.s, S.t); const el = elements(d.rx, d.ry, d.vx, d.vy, MUM); return el.en > -0.3; }
-    return false;
+  if (S.burn && S.burn.kind === 'main') {
+    // Main burns switch to precision at a clear physical moment, and only then does the needle mean anything.
+    if (S.stage === 'tli') { const el = elements(S.s[0], S.s[1], S.s[2], S.s[3], MUE); return el.ra > 280000 || el.en > 0; }
+    const d = dominant(S.s, S.t); if (!d.moon) return true;
+    const el = elements(d.rx, d.ry, d.vx, d.vy, MUM);
+    if (S.stage === 'loi') return el.en < 0 && el.ra < SOI;
+    if (S.stage === 'tei') return el.en > 0 && !mt.esc;
   }
+  if (mt.val === '—' || mt.val === '捕まっていない' || mt.esc) return false;
   return mt.pos > lo - 0.12 && mt.pos < hi + 0.12;
 }
 
@@ -1584,7 +1591,7 @@ function startDescent() {
   const r = Math.hypot(S.s[0], S.s[1]);
   S.descent = { alt: (r - RE) * 1000, v: Math.max(120, Math.hypot(S.s[2], S.s[3]) * 1000), phase: 'drogue', t: 0, pt: 0, dx: S.s[0] / r, dy: S.s[1] / r };
   S.burn = null; S.auto = null;
-  setFocus('ship'); cam.off.set(0, 0, 0); cam.dist = cam.distT = 0.03; cam.el = 0.22; cam.az = 0.5;
+  setFocus('ship'); cam.off.set(0, 0, 0); cam.dist = cam.distT = 0.024; cam.el = 0.2; cam.az = 0.5;
   toast('ドローグシュート展開！'); sfx.chute();
 }
 function updateDescent(dt) {
@@ -1756,7 +1763,7 @@ function nextAction() {
     if (st === 'tei') return ['帰るなら『噴射』を長押し／まだなら『もう一周』', 'burn'];
     return [w && w.late ? '近月点を過ぎた！ 今すぐ『減速』を長押し' : `今！ 『${retro ? '減速' : '噴射'}』を長押し`, 'burn'];
   }
-  if (S.burn && S.burn.kind === 'main') return [S.slow ? '針が緑に入ったら 離す！' : '押し続けて… スローになるまで離さない', 'burn'];
+  if (S.burn && S.burn.kind === 'main') return [S.slow ? '針が緑に入ったら 離す！' : '押し続けて… 精密モードになるまで離さない', 'burn'];
   if (S.auto) return S.auto.firing ? ['自動で噴射中…', 'none'] : ['点火を待っている（▶▶で進める）', 'skip'];
   if (mainAvailable()) return S.mode === 'B' ? ['パッドを上下に引いて針を緑へ → 噴射', 'pad'] : ['▶▶ で点火地点◎まで進める', 'skip'];
   const mt = metric(pred);
@@ -1813,14 +1820,15 @@ function updateHUD(w) {
   // While the main burn is far from the target, show how much has been burned against the rough need, so progress is visible.
   const coarse = (S.burn && S.burn.kind === 'main' && !S.slow && !mt.ok) || !!S.descent;
   ui.meter.classList.toggle('coarse', !!coarse);
+  ui.meter.classList.toggle('fine', !!(S.burn && S.burn.kind === 'main' && S.slow));
   if (S.descent) {
     ui.mLabel.textContent = '高度';
     ui.mValue.textContent = `${Math.round(S.descent.alt).toLocaleString('ja-JP')} m · 降下 ${S.descent.v.toFixed(S.descent.v < 20 ? 1 : 0)} m/s`;
     ui.mFill.style.width = Math.min(100, S.descent.alt / 100) + '%';
   } else if (coarse) {
     // No target mark here: the stopping point only appears once the precision meter takes over.
-    const b = S.burn, f = Math.min(0.96, b.done / b.nom);
-    ui.mLabel.textContent = '押し続ける';
+    const b = S.burn, f = Math.min(0.9, b.done / b.nom);
+    ui.mLabel.textContent = { tli: '押し続ける（まだ離さない）', loi: '押し続ける（月に捕まるまで）', tei: '押し続ける（月の重力を振り切るまで）' }[b.stage] || '押し続ける';
     ui.mValue.textContent = `噴射量 ${Math.round(b.done * 1000).toLocaleString('ja-JP')} m/s`;
     ui.mFill.style.width = (f * 100) + '%';
   } else {
@@ -1898,7 +1906,7 @@ function frame(now) {
   if (b || S.auto) predDirty = true;
   if ((predDirty && (b ? true : frameN % 3 === 0)) || frameN % 20 === 0) { runPredict(); if (b) updateBurnSlope(); }
   if (frameN % 20 === 0) planDirty = true;
-  if (S.burn && S.burn.kind === 'main' && S.slow && !S._fine) { S._fine = true; toast('あと少し！ 緑で離す', 1400); }
+  if (S.burn && S.burn.kind === 'main' && S.slow && !S._fine) { S._fine = true; toast('ここから精密！ 緑で離す', 1400); }
   const planning = S.mode === 'B' && S.plan && !S.auto && mainAvailable();
   if (planDirty && planning) { runPlan(); buildPredLine(plan, planLine, true); }
   if (!planning) planLine.visible = false;
@@ -1950,7 +1958,7 @@ function frame(now) {
   // Ship.
   const sd = camera.position.distanceTo(shipPos);
   ship.position.copy(shipPos);
-  ship.scale.setScalar(sd * (S.descent ? 0.0055 : 0.009));
+  ship.scale.setScalar(sd * (S.descent ? 0.0085 : 0.009));
   const d = dominant(S.s, S.t);
   const inEntry = S.stage === 'entry';
   let dirSim;
@@ -1985,9 +1993,9 @@ function frame(now) {
       ripple.material.opacity = 0.45 * (1 - u);
     }
   } else ripple.material.opacity = 0;
-  const skyA = Dd ? Math.min(1, Dd.t / 1.2) : 0;
+  const skyA = Dd ? Math.min(1, 0.25 + Dd.t / 1.2) : 0;
   // Near the end the illustrated sky and sea take over from the planet sphere entirely.
-  skyDome.visible = skyA > 0.01; atmosphere.visible = skyA < 0.99; earthTilt.visible = !(Dd && Dd.phase !== 'drogue'); trailLine.visible = trailLine.visible && !Dd;
+  skyDome.visible = skyA > 0.01; atmosphere.visible = skyA < 0.99; earthTilt.visible = !(Dd && Dd.phase !== 'drogue'); trailLine.visible = trailLine.visible && !Dd; if (Dd) { predLine.visible = false; planLine.visible = false; }
   if (skyDome.visible) { skyDome.position.copy(camera.position); skyDome.scale.setScalar(cam.dist * 30); skyDome.material.uniforms.uA.value = skyA; skyDome.material.uniforms.uUp.value.set(Dd.dx, 0, -Dd.dy); }
   plasma.visible = inEntry && S.g > 0.05;
   // Earth's shadow on the ship (a cylinder behind Earth along the sunlight).
