@@ -387,7 +387,8 @@ function dispXY(x, y, mx, my, out) {
   const fE = r <= RE ? SB : RE * SB * Math.pow(r / RE, AE) / r;
   const dx = x - mx, dy = y - my, rm = Math.hypot(dx, dy) || 1e-9;
   const fM = rm <= RM ? SB : RM * SB * Math.pow(rm / RM, AMN) / rm;
-  const w = smooth(SOI * 1.4, SOI * 0.45, rm);
+  // Blend over a wide band in log distance so paths crossing the boundary bend gently instead of kinking.
+  const w = smooth(Math.log(SOI * 2.6), Math.log(SOI * 0.3), Math.log(rm));
   const X = (1 - w) * x * fE + w * (mx * FEM + dx * fM);
   const Y = (1 - w) * y * fE + w * (my * FEM + dy * fM);
   out[0] = X * U; out[1] = Y * U;
@@ -420,7 +421,7 @@ function snapshot() {
 }
 function load(snap) {
   Object.assign(S, JSON.parse(JSON.stringify(snap)));
-  S.over = null; S.burn = null; S.auto = null; S.g = 0; S.slow = false; S.plan = null; S.teiCache = null; S.orbitVer = (S.orbitVer || 0) + 1;
+  S.over = null; S.burn = null; S.auto = null; S.g = 0; S.slow = false; S.plan = null; S.teiCache = null; S.orbitVer = (S.orbitVer || 0) + 1; S.lapAng = 0; S.lapPrev = null; S.orbitSkipUntil = 0; S.descent = null;
   S.checkpoint = snapshot();
   trail.length = 0; lastTrailT = -1e9;
   predDirty = true; planDirty = true;
@@ -512,6 +513,7 @@ function windowInfo() {
     return null;
   }
   if (S.stage === 'tei' && !S.main.tei && S.captured) {
+    if (S.t < (S.orbitSkipUntil || 0)) return null;
     let c = S.teiCache;
     if (!c || c.ver !== S.orbitVer || c.t < S.t - 0.5) { c = teiSearch(); if (c) S.teiCache = c; }
     if (c && c.t >= S.t - 0.5) return { t: c.t, x: c.x, y: c.y, frame: 'moon', mt: c.t, dv: c.dv };
@@ -967,7 +969,61 @@ const plasma = new THREE.Mesh(new THREE.ConeGeometry(1.5, 5.0, 24, 1, true), pla
 plasma.position.y = 3.2;
 shipBody.add(plasma);
 ship.renderOrder = 2;
+// Parachutes: two drogues, then a cluster of three striped mains.
+const chutes = new THREE.Group();
+{
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 8;
+  const c = cv.getContext('2d');
+  for (let i = 0; i < 16; i++) { c.fillStyle = i % 2 ? '#fff6ea' : '#ff6a3d'; c.fillRect(i * 16, 0, 16, 8); }
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.85, metalness: 0, emissive: 0x2a1208 });
+  const lineMat = new THREE.LineBasicMaterial({ color: 0xd8d2c6, transparent: true, opacity: 0.8 });
+  const make = (radius, dist, tilt, ang, height) => {
+    const g = new THREE.Group();
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 10, 0, Math.PI * 2, 0, Math.PI * 0.42), mat);
+    const top = new THREE.Vector3(Math.cos(ang) * dist, height, Math.sin(ang) * dist);
+    dome.position.copy(top); dome.rotation.set(Math.sin(ang) * tilt, 0, -Math.cos(ang) * tilt);
+    g.add(dome);
+    const pts = [];
+    const rimR = radius * Math.sin(Math.PI * 0.42), rimY = radius * Math.cos(Math.PI * 0.42);
+    for (let k = 0; k < 10; k++) {
+      const a = k / 10 * Math.PI * 2, rim = new THREE.Vector3(Math.cos(a) * rimR, rimY, Math.sin(a) * rimR).applyEuler(dome.rotation).add(top);
+      pts.push(new THREE.Vector3(0, 1.95, 0), rim);
+    }
+    g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+    return g;
+  };
+  chutes.userData.drogue = new THREE.Group();
+  chutes.userData.drogue.add(make(0.9, 0.9, 0.3, 0, 7.5), make(0.9, 0.9, 0.3, Math.PI, 7.5));
+  chutes.userData.main = new THREE.Group();
+  for (let i = 0; i < 3; i++) chutes.userData.main.add(make(3.0, 2.6, 0.32, i * Math.PI * 2 / 3 + 0.3, 11.5));
+  chutes.add(chutes.userData.drogue, chutes.userData.main);
+  chutes.visible = false;
+  shipBody.add(chutes);
+}
+// Low-altitude sky for the parachute scene: the space-scale atmosphere shell reads as flat haze this close.
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.ShaderMaterial({
+  uniforms: { uUp: { value: new THREE.Vector3(0, 1, 0) }, uSun: { value: SUN }, uA: { value: 0 } },
+  vertexShader: `varying vec3 vD; void main(){ vD=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader: `uniform vec3 uUp; uniform vec3 uSun; uniform float uA; varying vec3 vD;
+    void main(){ vec3 D=normalize(vD); float h=dot(D,uUp);
+      vec3 zen=vec3(0.05,0.17,0.52), hor=vec3(0.8,0.87,0.96), seaH=vec3(0.3,0.47,0.62), seaD=vec3(0.015,0.08,0.17);
+      vec3 c=h>0.0? mix(hor,zen,pow(h,0.5)) : mix(seaH,seaD,pow(-h,0.4));
+      c=mix(c,hor*1.04,exp(-abs(h)*70.0)*0.75);
+      c+=vec3(1.0,0.93,0.82)*pow(max(dot(D,uSun),0.0),80.0)*2.0*step(0.0,h);
+      if(h<0.0){ vec3 R=reflect(D,uUp); c+=vec3(1.0,0.9,0.75)*pow(max(dot(R,uSun),0.0),220.0)*2.5; }
+      gl_FragColor=vec4(c*1.2*uA,uA); }`,
+  side: THREE.BackSide, transparent: true, depthWrite: false, depthTest: false,
+}));
+skyDome.renderOrder = -1; skyDome.frustumCulled = false; skyDome.visible = false;
+scene.add(skyDome);
+const ripple = new THREE.Mesh(new THREE.RingGeometry(0.94, 1, 96), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+scene.add(ripple);
 scene.add(ship);
+// Where the Moon will be when the ship arrives: the predicted path ends here, not at today's Moon.
+const ghostMoon = new THREE.Mesh(new THREE.SphereGeometry(R_MOON, 48, 24), new THREE.MeshBasicMaterial({ color: 0x9fb4d8, transparent: true, opacity: 0.16, depthWrite: false }));
+ghostMoon.visible = false;
+scene.add(ghostMoon);
 const sunLight = new THREE.DirectionalLight(0xfff4e6, 3.2);
 scene.add(sunLight); scene.add(sunLight.target);
 scene.add(new THREE.AmbientLight(0x3050a0, 0.12));
@@ -975,7 +1031,7 @@ scene.add(new THREE.AmbientLight(0x3050a0, 0.12));
 // ---------- lines ----------
 const lineMats = [];
 function makeLine(width, opacity) {
-  const m = new LineMaterial({ linewidth: width, vertexColors: true, transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, worldUnits: false });
+  const m = new LineMaterial({ linewidth: width, vertexColors: true, transparent: true, opacity, depthWrite: false, worldUnits: false });
   lineMats.push(m);
   const l = new Line2(new LineGeometry(), m);
   l.frustumCulled = false; l.renderOrder = 3; l.visible = false;
@@ -1047,9 +1103,13 @@ window.addEventListener('resize', resize);
 const cam = { az: -0.5, el: 1.05, dist: 190, distT: 190, focus: 'earth', off: new THREE.Vector3(), target: new THREE.Vector3() };
 const DIST = { earth: [R_EARTH * 1.25, 1600, 150], moon: [R_MOON * 1.4, 1600, 38], ship: [0.25, 1600, 4], all: [60, 2400, 900] };
 const moonPos = new THREE.Vector3(), shipPos = new THREE.Vector3(), tmpV = new THREE.Vector3();
-function focusPos(f, out) { return f === 'earth' ? out.set(0, 0, 0) : f === 'moon' ? out.copy(moonPos) : f === 'all' ? out.copy(moonPos).multiplyScalar(0.5) : out.copy(shipPos); }
+function focusPos(f, out) { return f === 'earth' ? out.set(0, 0, 0) : f === 'moon' ? out.copy(moonPos) : f === 'all' ? allFrame(out) : out.copy(shipPos); }
 // Distance that fits the Earth–Moon span on this screen, portrait or landscape.
-function fitAll() { const half = moonPos.length() / 2 + 45, t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)); return half / (t * Math.min(1, camera.aspect)); }
+// 'All' frames Earth, today's Moon and, when a flyby is planned, the Moon at arrival.
+function allPoints() { const pts = [tmpA.set(0, 0, 0), moonPos]; if (typeof ghostMoon !== 'undefined' && ghostMoon.visible) pts.push(ghostMoon.position); return pts; }
+function allFrame(out) { const pts = allPoints(), lo = pts[0].clone(), hi = pts[0].clone(); for (const q of pts) { lo.min(q); hi.max(q); } return out.copy(lo).add(hi).multiplyScalar(0.5); }
+const tmpA = new THREE.Vector3();
+function fitAll() { const c = allFrame(new THREE.Vector3()); let r = 0; for (const q of allPoints()) r = Math.max(r, q.distanceTo(c)); const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)); return (r + 45) / (t * Math.min(1, camera.aspect)); }
 // Following the ship, the camera orbits in the ship's local frame (0 = outward from the body it circles),
 // so a fast low pass never swings the camera into the planet.
 function camBase() {
@@ -1092,7 +1152,7 @@ const trail = []; let lastTrailT = -1e9;
 
 // ---------- audio ----------
 const sfx = (() => {
-  let ctx = null, master, eng, engF, engSrc, plas, amb, on = true;
+  let ctx = null, master, eng, engF, engSrc, plas, amb, nbuf, on = true;
   function noiseBuf() {
     const b = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), d = b.getChannelData(0); let l = 0;
     for (let i = 0; i < d.length; i++) { const w = Math.random() * 2 - 1; l = (l + 0.02 * w) / 1.02; d[i] = l * 3.5; }
@@ -1104,7 +1164,7 @@ const sfx = (() => {
     ctx = new AC();
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.connect(ctx.destination);
     master = ctx.createGain(); master.gain.value = on ? 0.9 : 0; master.connect(comp);
-    const nb = noiseBuf();
+    const nb = noiseBuf(); nbuf = nb;
     engSrc = ctx.createBufferSource(); engSrc.buffer = nb; engSrc.loop = true;
     engF = ctx.createBiquadFilter(); engF.type = 'lowpass'; engF.frequency.value = 420;
     eng = ctx.createGain(); eng.gain.value = 0;
@@ -1126,12 +1186,20 @@ const sfx = (() => {
     g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.05);
   }
+  function burst(dur, type, f0, vol, f1) {
+    const t = ctx.currentTime, src = ctx.createBufferSource(); src.buffer = nbuf;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(f0, t); if (f1) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(master); src.start(t); src.stop(t + dur + 0.05);
+  }
   return {
     init,
     tick() { tone(1320, 0.06, 'sine', 0.08); },
     pop() { tone(660, 0.12, 'sine', 0.16, 0, 1.6); },
     ok() { tone(880, 0.1, 'triangle', 0.14); tone(1318.5, 0.18, 'triangle', 0.12, 0.08); },
     alert() { tone(740, 0.16, 'square', 0.05); tone(988, 0.2, 'square', 0.05, 0.18); },
+    chute() { if (!ctx) return; burst(0.35, 'bandpass', 900, 0.5); tone(70, 0.3, 'sine', 0.35, 0, 0.6); },
+    splash() { if (!ctx) return; burst(1.4, 'lowpass', 1800, 0.6, 250); tone(55, 0.5, 'sine', 0.3, 0, 0.5); },
     win() { [523.3, 659.3, 784, 987.8, 1046.5].forEach((f, i) => tone(f, 0.5, 'triangle', 0.12, i * 0.09)); },
     fail() { tone(392, 0.5, 'sawtooth', 0.07, 0, 0.5); tone(293.7, 0.7, 'sawtooth', 0.06, 0.2, 0.5); },
     update(burn, slow, aero) {
@@ -1164,7 +1232,8 @@ $('wUp').addEventListener('click', () => { S.warpIdx = Math.min(WARPS.length - 1
 ui.mode.addEventListener('click', e => { e.stopPropagation(); sfx.tick(); openMenu(); });
 ui.head.addEventListener('click', () => { const open = ui.more.hidden; ui.more.hidden = !open; ui.head.setAttribute('aria-expanded', String(open)); sfx.tick(); });
 // Skip: run at full speed until the next thing that matters; event caps still slow the approach.
-ui.skip.addEventListener('click', () => { audioInit(); const t = nextEvent(); if (t === null) { toast('しばらく何も起きない'); return; } S.skip = true; S.skipT = t; sfx.pop(); });
+function oneMoreOrbit() { S.orbitSkipUntil = S.t + 90; S.teiCache = null; S.holding = false; toast('もう一周！'); sfx.pop(); }
+ui.skip.addEventListener('click', () => { audioInit(); if (S.holding && S.stage === 'tei') { oneMoreOrbit(); return; } const t = nextEvent(); if (t === null) { toast('しばらく何も起きない'); return; } S.skip = true; S.skipT = t; sfx.pop(); });
 $('wDown').addEventListener('click', () => { S.warpIdx = Math.max(0, S.warpIdx - 1); S.skip = false; sfx.tick(); });
 $('muteBtn').addEventListener('click', () => { audioInit(); const on = sfx.toggle(); $('muteWave').style.opacity = on ? 1 : 0.15; });
 $('menuBtn').addEventListener('click', () => { sfx.tick(); openMenu(); });
@@ -1471,7 +1540,7 @@ function currentBurn() {
 const _tv = [0, 0];
 function advance(dtSim) {
   let steps = 0;
-  while (dtSim > 1e-7 && steps < 5000 && !S.over) {
+  while (dtSim > 1e-7 && steps < 5000 && !S.over && !S.descent) {
     const b = currentBurn();
     let h = stepSize(S.s, S.t, S.th0, 0.01, !!b);
     if (S.auto && !S.auto.firing) h = Math.min(h, Math.max(1e-3, S.auto.tIgn - S.t));
@@ -1506,8 +1575,29 @@ function checkEnd() {
   if (rM < RM) return end('crash');
   if (rE - RE < ATM && S.stage !== 'entry') { setStage('entry'); }
   if (S.stage === 'entry' && S.maxg > 12) return end('burnup');
-  if (rE - RE < 8) return end(S.captured ? 'success' : 'home');
+  if (rE - RE < 10) return startDescent();
   if (rE > 1.6e6) return end('lost');
+}
+// Under canopy the orbit model is done; a scripted descent (compressed time) takes over to the splash.
+function startDescent() {
+  if (S.descent) return;
+  const r = Math.hypot(S.s[0], S.s[1]);
+  S.descent = { alt: (r - RE) * 1000, v: Math.max(120, Math.hypot(S.s[2], S.s[3]) * 1000), phase: 'drogue', t: 0, pt: 0, dx: S.s[0] / r, dy: S.s[1] / r };
+  S.burn = null; S.auto = null;
+  setFocus('ship'); cam.off.set(0, 0, 0); cam.dist = cam.distT = 0.03; cam.el = 0.22; cam.az = 0.5;
+  toast('ドローグシュート展開！'); sfx.chute();
+}
+function updateDescent(dt) {
+  const D = S.descent; D.t += dt;
+  if (D.phase === 'splash') { if (D.t - D.pt > 2.4 && !S.over) end(S.captured ? 'success' : 'home'); return; }
+  const scale = D.phase === 'drogue' ? 25 : 40, h = dt * scale;
+  const vt = D.phase === 'drogue' ? 75 : 9, tau = D.phase === 'drogue' ? 6 : 5;
+  const v0 = D.v; D.v += (vt - D.v) * (1 - Math.exp(-h / tau));
+  S.g = Math.abs(v0 - D.v) / Math.max(h, 1e-3) / 9.81 + 1;
+  D.alt -= D.v * h; S.t += h;
+  if (D.phase === 'drogue' && D.alt < 3000) { D.phase = 'main'; D.pt = D.t; toast('メインパラシュート展開！'); sfx.chute(); }
+  if (D.alt <= 0) { D.alt = 0; D.phase = 'splash'; D.pt = D.t; sfx.splash(); toast('着水！'); }
+  const r = RE + D.alt / 1000; S.s = [D.dx * r, D.dy * r, 0, 0];
 }
 function end(kind) {
   if (S.over) return;
@@ -1575,16 +1665,22 @@ function buildPredLine(p, line, colored) {
   // Cubic Hermite between samples (positions + velocities) so long steps still draw as smooth arcs.
   const SUB = 4;
   let i0 = 0;
+  // On the way out, the path beyond the flyby is noise for the decision at hand: stop once past the Moon.
+  let nEnd = n;
+  if (colored && !S.captured && (S.stage === 'tli' || S.stage === 'coast' || S.stage === 'loi') && (p.pm || p.ca)) {
+    const tc = (p.pm || p.ca).t;
+    for (let i = 0; i < n; i++) { if (p.t[i] <= tc) continue; const m = moonAt(p.t[i], S.th0); if (Math.hypot(p.x[i] - m[0], p.y[i] - m[1]) > SOI * 0.5) { nEnd = i + 1; break; } }
+  }
   push(p.x[0], p.y[0], p.t[0], 0);
-  while (i0 < n - 1) {
-    const i1 = Math.min(n - 1, i0 + stride), dt = p.t[i1] - p.t[i0];
+  while (i0 < nEnd - 1) {
+    const i1 = Math.min(nEnd - 1, i0 + stride), dt = p.t[i1] - p.t[i0];
     const x0 = p.x[i0], y0 = p.y[i0], x1 = p.x[i1], y1 = p.y[i1];
     const ax = p.vx[i0] * dt, ay = p.vy[i0] * dt, bx = p.vx[i1] * dt, by = p.vy[i1] * dt;
     for (let k = 1; k <= SUB; k++) {
       const u = k / SUB, u2 = u * u, u3 = u2 * u;
       const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
       const t = p.t[i0] + dt * u;
-      push(h00 * x0 + h10 * ax + h01 * x1 + h11 * bx, h00 * y0 + h10 * ay + h01 * y1 + h11 * by, t, (i0 + (i1 - i0) * u) / Math.max(1, n - 1));
+      push(h00 * x0 + h10 * ax + h01 * x1 + h11 * bx, h00 * y0 + h10 * ay + h01 * y1 + h11 * by, t, (i0 + (i1 - i0) * u) / Math.max(1, nEnd - 1));
     }
     i0 = i1;
   }
@@ -1657,6 +1753,7 @@ function nextAction() {
   if (S.holding) {
     if (S.mode === 'B') return ['今！ パッドで量を決めて『噴射』', 'pad'];
     const w = windowInfo();
+    if (st === 'tei') return ['帰るなら『噴射』を長押し／まだなら『もう一周』', 'burn'];
     return [w && w.late ? '近月点を過ぎた！ 今すぐ『減速』を長押し' : `今！ 『${retro ? '減速' : '噴射'}』を長押し`, 'burn'];
   }
   if (S.burn && S.burn.kind === 'main') return [S.slow ? '針が緑に入ったら 離す！' : '押し続けて… スローになるまで離さない', 'burn'];
@@ -1667,13 +1764,14 @@ function nextAction() {
   if (st === 'loi') return ['修正噴射『後』で月に捕まる', 'corr'];
   if (st === 'tei') return mt.ok || !mt.band ? ['▶▶ で月を離れる', 'skip'] : ['修正噴射で針を緑へ', 'corr'];
   if (st === 'ret') return mt.ok ? ['▶▶ で地球まで進める', 'skip'] : ['修正噴射『外』『内』で針を緑へ', 'corr'];
+  if (S.descent) return [{ drogue: 'ドローグシュートで減速中', main: 'メインパラシュートでゆっくり降下', splash: '着水！ おかえり' }[S.descent.phase], 'none'];
   if (st === 'entry') return [`再突入中… ${S.g.toFixed(1)} G`, 'none'];
   return ['', 'none'];
 }
 function updateHUD(w) {
   const st = STAGES[S.stage];
   ui.step.textContent = `${st.n}/5`;
-  ui.title.textContent = st.title;
+  ui.title.textContent = S.stage === 'tei' && S.captured ? `${st.title} · 月周回${Math.floor(Math.abs(S.lapAng || 0) / (2 * Math.PI)) + 1}周目` : st.title;
   if (!ui.more.hidden) ui.hint.textContent = hint();
   const au = S.auto;
   if (au && !au.firing && au.tIgn - S.t > 20) { const w2 = windowInfo(); if (w2) au.tIgn = Math.max(S.t + 1, w2.t + au.shift); }
@@ -1691,8 +1789,9 @@ function updateHUD(w) {
   for (const [el, k] of [[ui.burn, 'burn'], [ui.skip, 'skip'], [ui.corr, 'corr'], [ui.exec, 'pad']]) el.classList.toggle('attn', target === k);
   if (S.holding && !S._heldAlert) { S._heldAlert = true; sfx.alert(); }
   if (!S.holding) S._heldAlert = false;
-  ui.skip.disabled = S.holding || !!S.burn || S.stage === 'entry' || nextEvent() === null;
-  ui.skip.textContent = S.skip ? '▶▶ 進行中' : '▶▶ 次へ';
+  const moreOrbit = S.holding && S.stage === 'tei';
+  ui.skip.disabled = !moreOrbit && (S.holding || !!S.burn || S.stage === 'entry' || nextEvent() === null);
+  ui.skip.textContent = moreOrbit ? '↻ もう一周' : S.skip ? '▶▶ 進行中' : '▶▶ 次へ';
 
   if (!ui.more.hidden) {
     const d = dominant(S.s, S.t);
@@ -1706,15 +1805,19 @@ function updateHUD(w) {
   ui.fuelBar.style.transform = ui.fuelBar2.style.transform = `scaleX(${S.fuel / FUEL0})`;
   ui.fuelTxt.textContent = Math.round(S.fuel * 1000).toLocaleString('ja-JP');
   ui.fuelChip.classList.toggle('low', S.fuel < 0.3);
-  ui.wVal.textContent = S.holding ? '停止中' : S.slow ? 'スロー' : '×' + (w.eff >= 1 ? Math.round(w.eff).toLocaleString('ja-JP') : w.eff.toFixed(2));
+  ui.wVal.textContent = S.descent ? `×${S.descent.phase === 'drogue' ? 25 : 40}` : S.holding ? '停止中' : S.slow ? 'スロー' : '×' + (w.eff >= 1 ? Math.round(w.eff).toLocaleString('ja-JP') : w.eff.toFixed(2));
   ui.wVal.classList.toggle('cap', w.capped || S.slow || S.holding || S.skip);
 
   const src = S.mode === 'B' && S.plan && !S.auto ? plan : pred;
   const mt = metric(src);
   // While the main burn is far from the target, show how much has been burned against the rough need, so progress is visible.
-  const coarse = S.burn && S.burn.kind === 'main' && !S.slow && !mt.ok;
+  const coarse = (S.burn && S.burn.kind === 'main' && !S.slow && !mt.ok) || !!S.descent;
   ui.meter.classList.toggle('coarse', !!coarse);
-  if (coarse) {
+  if (S.descent) {
+    ui.mLabel.textContent = '高度';
+    ui.mValue.textContent = `${Math.round(S.descent.alt).toLocaleString('ja-JP')} m · 降下 ${S.descent.v.toFixed(S.descent.v < 20 ? 1 : 0)} m/s`;
+    ui.mFill.style.width = Math.min(100, S.descent.alt / 100) + '%';
+  } else if (coarse) {
     // No target mark here: the stopping point only appears once the precision meter takes over.
     const b = S.burn, f = Math.min(0.96, b.done / b.nom);
     ui.mLabel.textContent = '押し続ける';
@@ -1776,13 +1879,16 @@ function frame(now) {
   const b0 = currentBurn();
   const w = effWarp(b0);
   S.holding = false;
-  if (!S.paused && S.started && !S.over) {
+  if (S.descent && !S.paused && !S.over) updateDescent(dtR);
+  if (!S.paused && S.started && !S.over && !S.descent) {
     let dtSim = dtR * w.eff;
     const gap = holdGap();
     if (gap !== null) { if (gap <= 0.05) { dtSim = 0; if (!S.holding) { S.skip = false; } S.holding = true; } else dtSim = Math.min(dtSim, gap); }
     if (S.skip && (S.t >= S.skipT - 0.5 || nextEvent() === null)) S.skip = false;
     if (dtSim > 0) advance(dtSim);
     stageLogic();
+    // Count laps around the Moon once captured.
+    if (S.captured && !S.main.tei) { const mm = moonAt(S.t, S.th0), a = Math.atan2(S.s[1] - mm[1], S.s[0] - mm[0]); if (S.lapPrev !== null && S.lapPrev !== undefined) { let da = a - S.lapPrev; da = Math.atan2(Math.sin(da), Math.cos(da)); S.lapAng = (S.lapAng || 0) + da; } S.lapPrev = a; }
     const rE = Math.hypot(S.s[0], S.s[1]);
     const d = dominant(S.s, S.t);
     const trailDt = Math.max(2, Math.min(900, 2 * Math.PI * Math.sqrt(d.r ** 3 / d.mu) / 400));
@@ -1797,7 +1903,7 @@ function frame(now) {
   if (planDirty && planning) { runPlan(); buildPredLine(plan, planLine, true); }
   if (!planning) planLine.visible = false;
   // The prediction is a planning aid: full strength while deciding or burning, a faint ghost while coasting.
-  const wantLine = planning ? 0.3 : (b || S.holding || mainAvailable() || S.auto) ? 1 : 0.1;
+  const wantLine = S.descent ? 0 : planning ? 0.3 : (b || S.holding || mainAvailable() || S.auto) ? 1 : 0.1;
   predLine.material.opacity += (wantLine - predLine.material.opacity) * (1 - Math.exp(-dtR * 5));
   predLine.material.linewidth = predLine.material.opacity > 0.5 ? 3.2 : 1.6;
   trailLine.material.opacity = 0.45;
@@ -1825,21 +1931,31 @@ function frame(now) {
   camera.position.set(Math.cos(cam.el) * Math.sin(azE), Math.sin(cam.el), Math.cos(cam.el) * Math.cos(azE)).multiplyScalar(cam.dist).add(cam.target);
   // If the view would still dip inside a body, lift it smoothly instead of snapping to the surface.
   for (const [c, r] of [[tmpC.set(0, 0, 0), R_EARTH], [moonPos, R_MOON]]) {
-    const dv = camera.position.clone().sub(c), L = dv.length(), minL = r * 1.01 + 0.02;
-    if (L < minL) { camera.position.copy(c).addScaledVector(dv.normalize(), minL); cam.el = Math.min(1.5, cam.el + dtR * 0.8); }
+    const dv = camera.position.clone().sub(c), L = dv.length(), minL = r * 1.002 + 0.003;
+    if (L < minL && !S.descent) { camera.position.copy(c).addScaledVector(dv.normalize(), minL); cam.el = Math.min(1.5, cam.el + dtR * 0.8); }
   }
-  camera.near = Math.min(2, Math.max(0.002, cam.dist * 0.004));
+  camera.up.set(0, 1, 0);
+  if (S.descent) {
+    // Under canopy: orbit the capsule around the local vertical so the horizon stays level.
+    const R = tmpA.set(S.descent.dx, 0, -S.descent.dy), N = tmpC.set(0, 1, 0), T = new THREE.Vector3().crossVectors(N, R);
+    const ce = Math.max(-0.2, Math.min(1.3, cam.el)), off = new THREE.Vector3()
+      .addScaledVector(T, Math.cos(cam.az) * Math.cos(ce)).addScaledVector(N, Math.sin(cam.az) * Math.cos(ce)).addScaledVector(R, Math.sin(ce));
+    camera.position.copy(shipPos).addScaledVector(off, cam.dist);
+    camera.up.copy(R);
+  }
+  camera.near = Math.min(2, Math.max(0.0001, cam.dist * 0.004));
   camera.lookAt(cam.target); camera.updateProjectionMatrix();
   bgCam.quaternion.copy(camera.quaternion);
 
   // Ship.
   const sd = camera.position.distanceTo(shipPos);
   ship.position.copy(shipPos);
-  ship.scale.setScalar(sd * 0.009);
+  ship.scale.setScalar(sd * (S.descent ? 0.0055 : 0.009));
   const d = dominant(S.s, S.t);
   const inEntry = S.stage === 'entry';
   let dirSim;
   if (b) { thrustVec(b.dir, S.s, S.t, 1, _tv); dirSim = [_tv[0], _tv[1]]; }
+  else if (S.descent) dirSim = [S.descent.dx, S.descent.dy];
   else { const v = Math.hypot(d.vx, d.vy) || 1; dirSim = inEntry ? [-S.s[2], -S.s[3]] : [d.vx / v, d.vy / v]; }
   dirV.set(dirSim[0], 0, -dirSim[1]).normalize();
   shipQ.setFromUnitVectors(upY, dirV);
@@ -1851,7 +1967,28 @@ function frame(now) {
   flame.visible = flameMat.uniforms.uI.value > 0.01;
   plasmaMat.uniforms.uT.value = now / 1000;
   // Smoothed so frame-to-frame G changes cannot flash the whole screen through the bloom.
-  plasmaMat.uniforms.uI.value += ((inEntry ? Math.min(1, S.g / 6) : 0) - plasmaMat.uniforms.uI.value) * (1 - Math.exp(-dtR * 3));
+  plasmaMat.uniforms.uI.value += ((inEntry && !S.descent ? Math.min(1, S.g / 6) : 0) - plasmaMat.uniforms.uI.value) * (1 - Math.exp(-dtR * 3));
+  // Canopies inflate over a moment and sway; the ripple spreads after the splash.
+  const Dd = S.descent;
+  chutes.visible = !!Dd && Dd.phase !== 'splash' || !!(Dd && Dd.t - Dd.pt < 0.6);
+  if (Dd) {
+    const k = Math.min(1, (Dd.t - Dd.pt) / 0.8), e = 1 - Math.pow(1 - k, 3);
+    chutes.userData.drogue.visible = Dd.phase === 'drogue';
+    chutes.userData.main.visible = Dd.phase !== 'drogue';
+    const grp = Dd.phase === 'drogue' ? chutes.userData.drogue : chutes.userData.main;
+    grp.scale.set(0.3 + 0.7 * e, 0.4 + 0.6 * e, 0.3 + 0.7 * e);
+    chutes.rotation.z = 0.05 * Math.sin(Dd.t * 1.3); chutes.rotation.x = 0.04 * Math.sin(Dd.t * 0.9);
+    if (Dd.phase === 'splash') {
+      const u = Math.min(1, (Dd.t - Dd.pt) / 2.2), rr = 0.0004 + 0.006 * Math.sqrt(u);
+      ripple.position.copy(shipPos); ripple.scale.setScalar(rr);
+      ripple.lookAt(tmpV.copy(shipPos).multiplyScalar(2));
+      ripple.material.opacity = 0.45 * (1 - u);
+    }
+  } else ripple.material.opacity = 0;
+  const skyA = Dd ? Math.min(1, Dd.t / 1.2) : 0;
+  // Near the end the illustrated sky and sea take over from the planet sphere entirely.
+  skyDome.visible = skyA > 0.01; atmosphere.visible = skyA < 0.99; earthTilt.visible = !(Dd && Dd.phase !== 'drogue'); trailLine.visible = trailLine.visible && !Dd;
+  if (skyDome.visible) { skyDome.position.copy(camera.position); skyDome.scale.setScalar(cam.dist * 30); skyDome.material.uniforms.uA.value = skyA; skyDome.material.uniforms.uUp.value.set(Dd.dx, 0, -Dd.dy); }
   plasma.visible = inEntry && S.g > 0.05;
   // Earth's shadow on the ship (a cylinder behind Earth along the sunlight).
   const sp = new THREE.Vector3(S.s[0], 0, -S.s[1]), along = sp.dot(SUN);
@@ -1859,12 +1996,17 @@ function frame(now) {
   sunLight.intensity += ((inShadow ? 0.02 : 3.2) - sunLight.intensity) * 0.2;
   sunLight.position.copy(shipPos).addScaledVector(SUN, 10); sunLight.target.position.copy(shipPos);
 
+  // Ghost Moon at encounter time (Earth frame only).
+  const enc = !S.captured && (S.stage === 'tli' || S.stage === 'coast') && !frameMoon() ? (pred.pm || pred.ca) : null;
+  ghostMoon.visible = !!(enc && predLine.material.opacity > 0.3 && Math.abs(enc.t - S.t) > 3600);
+  if (ghostMoon.visible) { const mc2 = moonCenter(moonAt(enc.t, S.th0)); ghostMoon.position.set(mc2[0], 0, -mc2[1]); }
   // Labels.
   let li = 0;
   const eScr = R_EARTH / camera.position.length(), mScr = R_MOON / camera.position.distanceTo(moonPos);
   const scrUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
   if (eScr < 0.35) place(label(li++, 'body'), tmpV.set(0, 0, 0).addScaledVector(scrUp, R_EARTH * 1.3), '地球');
   if (mScr < 0.35) place(label(li++, 'body'), tmpV.copy(moonPos).addScaledVector(scrUp, R_MOON * 1.45), '月');
+  if (ghostMoon.visible) place(label(li++, 'body'), tmpV.copy(ghostMoon.position).addScaledVector(scrUp, -R_MOON * 2.6), '到着時の月');
   const mf = frameMoon(), mNow = m;
   const evPos = (x, y, t) => {
     if (mf) { const mm = moonAt(t, S.th0); return toV3(x - mm[0] + mNow[0], y - mm[1] + mNow[1], mNow[0], mNow[1], new THREE.Vector3()); }
@@ -1888,7 +2030,7 @@ function frame(now) {
   finalPass.uniforms.uSlow.value += (slowT - finalPass.uniforms.uSlow.value) * 0.12;
   finalPass.uniforms.uTime.value = (now / 1000) % 100;
   ui.slow.hidden = !S.slow;
-  sfx.update(b ? b.kind : null, S.slow, inEntry ? S.g : 0);
+  sfx.update(b ? b.kind : null, S.slow, S.descent ? (S.descent.phase === 'splash' ? 0 : S.descent.v / 40) : inEntry ? S.g : 0);
 
   if (now - hudT > 90) { hudT = now; updateHUD(w); }
   composer.render();
@@ -1902,7 +2044,7 @@ openStart();
 applyMode();
 $('boot').remove();
 requestAnimationFrame(frame);
-window.__S = S; window.__pred = pred; window.__autopilot = () => autopilot(); window.__load = load; window.__step = (dt) => { advance(dt); stageLogic(); runPredict(); }; window.__metric = () => metric(pred); window.__win = () => windowInfo(); window.__frame = () => { const b = currentBurn(); const w = effWarp(b); advance(w.eff / 60); stageLogic(); runPredict(); if (currentBurn()) updateBurnSlope(); return w.eff; }; window.__sim = (sec) => { let f = 0, slowF = 0; const n = Math.round(sec * 60); for (let i = 0; i < n; i++) { const b = currentBurn(); const w = effWarp(b); advance(w.eff / 60); stageLogic(); runPredict(); if (currentBurn()) updateBurnSlope(); if (S.slow) slowF++; f++; if (!S.burn) break; } return slowF / 60; }; window.__planMetric = () => { const w2 = windowInfo(); if (w2 && S.plan) S.plan.base = w2.t; runPlan(); return metric(plan); }; window.__hud = () => updateHUD(effWarp(null)); window.__defaultPlan = defaultPlan; window.__endBurn = endMainBurn; window.__dbg = { predLine, trailLine, atmosphere, earth, cam, setFocus };
+window.__S = S; window.__pred = pred; window.__autopilot = () => autopilot(); window.__load = load; window.__step = (dt) => { advance(dt); stageLogic(); runPredict(); }; window.__metric = () => metric(pred); window.__win = () => windowInfo(); window.__descent = () => S.descent; window.__frame = () => { const b = currentBurn(); const w = effWarp(b); advance(w.eff / 60); stageLogic(); runPredict(); if (currentBurn()) updateBurnSlope(); return w.eff; }; window.__sim = (sec) => { let f = 0, slowF = 0; const n = Math.round(sec * 60); for (let i = 0; i < n; i++) { const b = currentBurn(); const w = effWarp(b); advance(w.eff / 60); stageLogic(); runPredict(); if (currentBurn()) updateBurnSlope(); if (S.slow) slowF++; f++; if (!S.burn) break; } return slowF / 60; }; window.__planMetric = () => { const w2 = windowInfo(); if (w2 && S.plan) S.plan.base = w2.t; runPlan(); return metric(plan); }; window.__hud = () => updateHUD(effWarp(null)); window.__defaultPlan = defaultPlan; window.__endBurn = endMainBurn; window.__dbg = { predLine, trailLine, atmosphere, earth, cam, setFocus };
 </script>
 </body>
 </html>
